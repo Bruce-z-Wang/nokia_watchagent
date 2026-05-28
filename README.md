@@ -1,0 +1,4 @@
+Why city-specific thresholds: Vancouver's climate is mild and oceanic — 30C there is genuinely rare and alarming. Ottawa is continental — it regularly hits 33C in summer so a higher bar makes sense. A single global threshold would either flood Ottawa with false positives or miss real events in Vancouver.
+Why "rapid drop" matters: A sudden 10C drop between readings signals a fast-moving cold front — that's more operationally important than a temperature that's simply low, because it's unexpected and can catch people off guard.
+Why "feels very different" is useful: A -20C day that feels like -30C due to wind chill is a safety issue even if -20C alone doesn't cross a threshold. The gap between actual and apparent captures this.
+Why Vancouver has a higher precipitation threshold: Vancouver gets consistent rain — 5mm/hr there is unremarkable. The same amount in Ottawa or Toronto signals something worth noticing.
