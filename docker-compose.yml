@@ -1,0 +1,14 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - db_data:/data
+    environment:
+      - DB_PATH=/data/weather.db
+
+volumes:
+  db_data:
