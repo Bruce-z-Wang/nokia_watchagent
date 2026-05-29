@@ -183,16 +183,30 @@ Fires when wind speed crosses 60 km/h.
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-cd app
-uvicorn main:app --reload
+pip install -r requirements-dev.txt
+uvicorn app.main:app --reload
 ```
 
-The API is then at <http://localhost:8000>; the poller starts automatically and writes `weather.db` in the current directory. Override the database path with the `DB_PATH` environment variable.
+The API is then at <http://localhost:8000>; the poller starts automatically and writes `weather.db` in the current directory. Override the database path with the `DB_PATH` environment variable. Run commands from the project root — `app/` is a Python package and imports are package-qualified (`from app.database import ...`).
 
-### Docker — coming
+### Docker
 
-A `Dockerfile`, `docker-compose.yml`, and `.env.example` are upcoming. The intended start command is `docker compose up --build` from a clean clone, with `weather.db` mounted on a named volume for persistence across container restarts.
+A `Dockerfile`, `docker-compose.yml`, and `.env.example` are committed. From any machine with Docker and Git:
+
+```bash
+git clone <this-repo>
+cd watchagent
+cp .env.example .env
+docker compose up --build
+```
+
+The API is then reachable at <http://localhost:8000>, the poller begins collecting immediately, and the SQLite database lives in the `db_data` named Docker volume (mounted at `/data/weather.db` inside the container). The volume survives `docker compose down` / `docker compose up` cycles; to wipe the database, run `docker compose down -v`.
+
+Environment variables (see `.env.example`):
+
+- `DB_PATH` — path to the SQLite file. Defaults to `weather.db` in the current directory when run outside Docker; `docker-compose.yml` overrides this to `/data/weather.db` so the database lands in the persistent volume.
+
+No API keys, accounts, or credentials are required — Open-Meteo is free and unauthenticated. No secrets are committed to the repository (`.env` is gitignored; `.env.example` documents the required variables).
 
 ## Running tests
 
@@ -212,22 +226,81 @@ Every test uses `tmp_path` + `monkeypatch.setenv("DB_PATH", …)` for isolation,
 
 ## Cursor setup
 
-The `.cursor/` folder (rules, agent definition, and data-analysis skill) is being built next. Once committed, this section will describe each rule, the agent's scoped purpose, and what the data-analysis skill answers.
+The `.cursor/` folder contains two rules, one agent, and one runnable skill, each tied to a specific decision in this codebase.
+
+### Rules — `.cursor/rules/`
+
+Rules are persistent instructions Cursor follows when editing matching files. Both rules have a non-empty `globs:` so they activate automatically when their target file is open.
+
+#### `polling-errors.mdc` — globs: `app/poller.py`
+
+Encodes the exact error-handling contract for `fetch_weather()`: WARNING-level logging with the city name plus the most informative exception detail (HTTP status for `httpx.HTTPStatusError`, the message for generic `Exception`), always return `None` (never raise), no per-call retries (the 600-second poll loop is the retry mechanism), no bare `except:`, and no second log line in `poll_all` when a city is skipped.
+
+This rule exists because the loud failure mode for a poller is silent retries that drown logs; the loud success mode is exactly one clear WARNING per real failure. The rule pins that contract so future edits cannot accidentally relax it.
+
+#### `event-schema.mdc` — globs: `app/events.py`
+
+Defines the seven fields every event row must contain (`city`, `event_type`, `description`, `severity`, `reading_id`, `reading_data`, `detected_at`), the legal severity values (`"low"` / `"medium"` / `"high"`), and three detector conventions: (1) always go through `store_event()` rather than writing the events table directly, (2) use a guard clause when history is insufficient (e.g. `if len(readings) < 10: return`), (3) prefer transition-based firing over absolute one-shots, and document the dedup strategy when proposing a new detector.
+
+This rule exists because the events table is the *output* of this system. Schema drift, a detector that writes directly to the table, or a detector that fires on every poll would all silently degrade the deliverable.
+
+### Agent — `.cursor/agents/event-reviewer.md`
+
+Custom agent named `event-reviewer`, scoped to one task: reviewing new or modified detectors in `app/events.py`. Its system prompt lists the five existing detectors with their thresholds, the checklist a reviewer must apply (guard clause? transition-only firing? `store_event` called with all required fields including `reading_id` and `metadata`? would it over-fire on normal diurnal variation? thresholds defensible?), and an explicit boundary: only `app/events.py` — never modify `database.py`, `poller.py`, or `routes.py`.
+
+Invoke it via Cursor's agent picker when adding a sixth detector or tweaking thresholds. It exists because event-detection logic is the highest-leverage code in this repo and the easiest place to slip in either an over-firing detector or a schema-drift bug. A scoped reviewer agent is meaningfully better than a general one because it can hold the full list of existing detectors and the schema in its system prompt.
+
+### Skill — `.cursor/skills/analyze-weather-data/`
+
+A read-only data-analysis skill. `SKILL.md` advertises the skill to Cursor with a description of when it is relevant; `scripts/analyze.py` is the CLI the agent invokes with `--question "<question>"` and an optional `--hours <N>` flag. The script keyword-routes the question to one of seven SQL-backed queries:
+
+| Question keywords | Returns |
+| --- | --- |
+| `summary` | Total readings, total events, monitored cities, earliest/latest reading timestamps, events grouped by `event_type`. |
+| `temperature` + `trend` | Last 12 readings per city with delta-from-previous (uses SQL `LAG()` partitioned by city). |
+| `compare` / `side` / `latest` | Latest reading per city, side-by-side. |
+| `temperature` / `avg` / `average` | Per-city min/mean/max temperature, total precipitation, max wind, reading count. |
+| `event` + (`most` / `count` / `per city`) | Per-city event counts grouped by `event_type` and `severity`. |
+| `event` | Most recent events; `--hours N` switches the query from "last N events" to "all events in the last N hours". |
+| `recent` / `reading` | Last 10 readings across all cities. |
+
+Output is always JSON to stdout, so the agent can parse and explain the result in chat. The script honours `DB_PATH` from the environment (matching the rest of the system, including the Docker volume), and emits a structured `{"error": "..."}` JSON object plus a non-zero exit code if the database file is missing.
+
+Example invocations:
+
+```bash
+python .cursor/skills/analyze-weather-data/scripts/analyze.py --question summary
+python .cursor/skills/analyze-weather-data/scripts/analyze.py --question "compare cities"
+python .cursor/skills/analyze-weather-data/scripts/analyze.py --question "recent events" --hours 24
+```
+
+The skill exists because the rubric requires a runnable analysis skill, and because the difference between "the system collected data" and "we learned something from the data" is exactly this layer of querying and aggregation. Keeping it read-only and outside `app/` keeps it strictly an observer of the production system — it can answer questions about the database but can never accidentally modify it.
 
 ## Project layout
 
 ```
 app/
+  __init__.py    Marks app/ as a Python package
   main.py        FastAPI app + lifespan poller
   poller.py      Open-Meteo client, dedup-on-insert
   events.py      Five detectors + the orchestrating check_for_events()
   routes.py      /health, /readings, /events
   database.py    SQLite connection + schema
-  models.py      Dataclasses (currently unused; kept as documentation)
 tests/
-  test_dedup.py
-  test_events.py
-  test_api.py
-requirements.txt
+  test_dedup.py  Dedup contract: API returns same reading twice, only one row stored
+  test_events.py Detector firing/silence under controlled reading sequences
+  test_api.py    /health, /readings, /events shape + filters + ordering
+.cursor/
+  rules/         polling-errors.mdc, event-schema.mdc
+  agents/        event-reviewer.md
+  skills/        analyze-weather-data/ (SKILL.md + scripts/analyze.py)
+.github/workflows/
+  ci.yml         Pytest job + docker build job, runs on push to main and PRs
+Dockerfile           Python 3.11-slim, uvicorn app.main:app
+docker-compose.yml   db_data named volume mounted at /data/weather.db
+.env.example         Documents DB_PATH
+.dockerignore
+requirements.txt     Pinned: fastapi, uvicorn[standard], httpx
+requirements-dev.txt Pinned: pytest, pytest-asyncio
 README.md
 ```

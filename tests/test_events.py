@@ -179,3 +179,69 @@ def test_severe_weather_does_not_fire_on_clear(db):
     check_for_events("Ottawa", fake_data)
     events = get_events("Ottawa")
     assert events == []
+
+
+#temperature anomaly
+#
+# The other tests above filter assertions to the detector under test because a
+# strong anomaly will also trigger rapid_temperature_change (a 20C jump is both
+# fast AND statistically extreme). That overlap is real production behaviour
+# and not the thing we're testing here.
+
+def test_temperature_anomaly_does_not_fire_with_insufficient_history(db):
+    # 9 readings total < the detector's 10-reading guard, so even an extreme
+    # current value should produce zero temperature_anomaly events.
+    for i in range(8):
+        make_reading("Ottawa", f"2026-05-28T{i:02d}:00", temp=10.0)
+    make_reading("Ottawa", "2026-05-28T08:00", temp=30.0)
+    fake_data = {"current": {
+        "time": "2026-05-28T08:00",
+        "temperature_2m": 30.0,
+        "apparent_temperature": 28.0,
+        "precipitation": 0.0,
+        "wind_speed_10m": 10.0,
+        "weather_code": 1,
+    }}
+    check_for_events("Ottawa", fake_data)
+    anomaly_events = [e for e in get_events("Ottawa") if e["event_type"] == "temperature_anomaly"]
+    assert anomaly_events == []
+
+
+def test_temperature_anomaly_does_not_fire_when_reading_is_near_mean(db):
+    # 11 stable readings around 10C with the current value also at 10C - z-score
+    # is far below the 2.0 threshold so no anomaly should fire.
+    for i in range(10):
+        make_reading("Ottawa", f"2026-05-28T{i:02d}:00", temp=10.0 + (i % 2) * 0.1)
+    make_reading("Ottawa", "2026-05-28T10:00", temp=10.0)
+    fake_data = {"current": {
+        "time": "2026-05-28T10:00",
+        "temperature_2m": 10.0,
+        "apparent_temperature": 8.0,
+        "precipitation": 0.0,
+        "wind_speed_10m": 10.0,
+        "weather_code": 1,
+    }}
+    check_for_events("Ottawa", fake_data)
+    events = get_events("Ottawa")
+    assert events == []
+
+
+def test_temperature_anomaly_fires_on_extreme_reading(db):
+    # 20 stable readings around 10C followed by a 30C current value. With that
+    # much history dominating the mean, z >> 3 and the detector should fire at
+    # high severity.
+    for i in range(20):
+        make_reading("Ottawa", f"2026-05-28T{i:02d}:00", temp=10.0 + (i % 3) * 0.1)
+    make_reading("Ottawa", "2026-05-28T20:00", temp=30.0)
+    fake_data = {"current": {
+        "time": "2026-05-28T20:00",
+        "temperature_2m": 30.0,
+        "apparent_temperature": 28.0,
+        "precipitation": 0.0,
+        "wind_speed_10m": 10.0,
+        "weather_code": 1,
+    }}
+    check_for_events("Ottawa", fake_data)
+    anomaly_events = [e for e in get_events("Ottawa") if e["event_type"] == "temperature_anomaly"]
+    assert len(anomaly_events) == 1
+    assert anomaly_events[0]["severity"] == "high"
