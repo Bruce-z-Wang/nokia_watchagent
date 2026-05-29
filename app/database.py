@@ -1,12 +1,13 @@
 import sqlite3
 import os
 
-DB_PATH = os.getenv("DB_PATH", "weather.db")
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    db_path = os.getenv("DB_PATH", "weather.db")
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     conn = get_conn()

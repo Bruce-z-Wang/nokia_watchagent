@@ -2,7 +2,7 @@ import httpx
 import json
 import logging
 from datetime import datetime, timezone
-from database import get_conn
+from app.database import get_conn
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def store_reading(city_name: str, data: dict) -> bool:
         conn.close()
 
 def poll_all():
-    from events import check_for_events
+    from app.events import check_for_events
     logger.info("Polling weather for all cities...")
     for city in CITIES:
         data = fetch_weather(city)

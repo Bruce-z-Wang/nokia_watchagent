@@ -1,0 +1,38 @@
+---
+description: Schema and conventions for event records
+globs: app/events.py
+alwaysApply: false
+---
+
+# Event record schema
+
+Every row in the `events` table must include:
+
+- `city` — affected city (Ottawa, Toronto, Vancouver).
+- `event_type` — snake_case identifier for the detector, e.g.
+  `rapid_temperature_change`. Globally unique per detector.
+- `description` — one human-readable sentence explaining what happened,
+  in which city, and the numeric reason it fired.
+- `severity` — exactly one of `"low"`, `"medium"`, `"high"`.
+- `reading_id` — id of the row in `readings` that triggered this event.
+  May be `None` if the event has no single triggering reading.
+- `reading_data` — JSON string of the raw values that explain why the
+  event fired. Pass it via the `metadata={...}` parameter of
+  `store_event()`; it is JSON-encoded for you.
+- `detected_at` — UTC ISO 8601 timestamp; use
+  `datetime.now(timezone.utc).isoformat()`.
+
+# Detector conventions
+
+- Never write to the `events` table directly — always go through
+  `store_event()` in `events.py`.
+- Return early with a guard clause when insufficient history exists
+  (e.g. `if len(readings) < 10: return` in `check_temperature_anomaly`).
+- Detectors SHOULD fire on state transitions, not repeatedly while a
+  condition persists. When proposing a new detector, justify the dedup
+  strategy: transition check (current vs previous), time-windowed
+  cooldown (no refire within N hours for the same event_type and city),
+  or one-shot absolute (fires once, never again — discouraged for
+  recurring conditions).
+- When adding a new detector, register it inside `check_for_events()`
+  so it runs on each new reading.

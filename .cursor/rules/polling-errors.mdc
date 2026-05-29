@@ -1,0 +1,26 @@
+---
+description: Error handling conventions for the weather poller
+globs: app/poller.py
+alwaysApply: false
+---
+
+# Poller error handling
+
+When a call to the Open-Meteo API fails inside `fetch_weather()`:
+
+- Log at WARNING level using the module logger.
+- The log line must include the city name plus the most informative piece
+  available for that exception type: HTTP status code for `httpx.HTTPStatusError`,
+  exception message for generic `Exception`.
+- Always return `None` from `fetch_weather()` — never raise.
+- `poll_all()` must check for `None` and skip that city without adding a
+  second log line; the warning has already been logged inside `fetch_weather`.
+- Never use bare `except:` — catch `httpx.HTTPStatusError` and `Exception`
+  separately so the log message can be tailored.
+- Do not add per-call retries inside `fetch_weather`. The 600-second outer
+  poll loop in `poll_all()` is the retry mechanism.
+
+Example log format:
+
+```python
+logger.warning(f"Poll failed for {city['name']}: HTTP {e.response.status_code}")

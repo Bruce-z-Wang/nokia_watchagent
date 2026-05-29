@@ -3,9 +3,9 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from database import init_db
-from poller import poll_all
-from routes import router
+from app.database import init_db
+from app.poller import poll_all
+from app.routes import router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
